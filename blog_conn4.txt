@@ -1,0 +1,431 @@
+This project aims to implement the simple connect-four game in Python with Pygame.
+
+Plan: 
+    1. Create the screen
+        - It will be made of 2 parts: 
+            - a top-screen in which the active colour will be drawn as a ball and on where the winner 
+                will be declared
+            - a bottom part containing a grid of 6x6 circles whose colours can be changed.
+    2. The active-colour ball in the top-screen will follow the motion of the mouse as it moves across 
+        the grid columns.
+    3. When the mouse clicks on any circle, the colour of the bottom-most white circle in that column 
+        will change to the active colour
+    4. Check each column, row and diagonal for arrangements of a single colour in successions of up to four.
+
+######################################################3
+# Imports
+import pygame
+from pygame.locals import *
+from gameobjects.vector2 import Vector2
+from sys import exit
+from random import *
+
+# Initialise
+pygame.init()
+pygame.mixer.init()
+pygame.font.init()
+
+# Constants
+WIDTH = 480; HEIGHT = 600
+SCREEN_SIZE = (WIDTH+1, HEIGHT+1)
+screen = pygame.display.set_mode(SCREEN_SIZE, 0, 32)
+pygame.display.set_caption('Connect Four')
+
+GRID_SIDE = 80
+TOP_SCREEN_SIZE = (WIDTH, 120)
+
+WHITE = (255,255,255)
+BLACK = (0,0,0)
+BLUE = (0,0,100)
+YELLOW = (250,255,0)
+RED = (255,0,50)
+WINNERFONT = pygame.font.SysFont('comicsans', 80)
+COL_IND = {}
+#####################################################3
+The top of the screen is described by TOP_SCREEN_SIZE.
+The COL_IND variable will hold position:colour pairs for each circle position in the grid.
+This will be used to draw the grid later.
+
+In order to be able to check every single row and column and diagonal for 4 colours, I first created an array 
+class to stand for the grid and defined methods that could perform this checking for me instead. This could 
+also be similarly done with numpy arrays, but I tried to avoid using external modules. The class is called 
+Matrix and it takes in a list of lists that represent the rows of numbers, which correspond to the positions 
+of the circles in the grid.
+Each row in the array (list of lists) must be of the same length. 
+The diagonals will be checked and stored in an attribute called self.diags
+###################################################33
+class Matrix(object):
+    ''' This creates a matrix of a list where each row is a list of numbers'''
+    def __init__(self, array):
+        self.array = array
+        # Check that all rows are of the same length
+        try:
+            for n in range(len(array)):
+                if len(array[n]) != len(array[n+1]):
+                    raise Exception('Inconsistent Dimensions: Item ' + str(n+1))
+        except IndexError:
+            pass
+        # Check that all elements are numbers
+        for arr in self.array:
+            for m in arr:
+                is_correct_type = type(m)==int or type(m)==float
+                if not is_correct_type:
+                    raise Exception('Incorrect Type')
+        
+        self.r = len(self.array[0])
+        self.c = len(self.array)
+        self.size = (self.r, self.c)
+        self.diags = self.diagonals()
+###################################
+To make sure all diagonals are returned, I'll have to check for diagonals in the array forward, 
+flipped backward and flipped upsidedown and then backward. These transformations will 
+be performed on the array.
+##########################################
+    def flipLR(self, array):
+        ''' flip the matrix elements left to right '''
+        for i in range(len(array)):
+            array[i] = list(array[i].__reversed__())
+        return array
+
+    def flipUD(self, array):
+        ''' flip the matrix upside down '''
+        array = list(array.__reversed__())
+        return array
+
+    def trimDiags(self, array):
+        ''' sort arrays and remove empty arrays and repeated arrays '''
+        sorted_array = [sorted(arr) for arr in array]
+        # Remove empty lists
+        for n in sorted_array[:]:
+            if not n:
+                sorted_array.remove(n)
+        # Remove list repititions
+        for n in sorted_array[:]: 
+            # while more than one found, remove repitition
+            while sorted_array.count(n)>1 or not (sorted_array.count(n)):
+                sorted_array.remove(n)
+        return sorted(sorted_array)
+
+    def diagonals(self):
+        ''' Return list of all diagonals'''
+        diags = []
+        cols = list(range(self.c))
+        rows = list(range(self.r))
+        all_forms = [
+            self.array, 
+            self.flipUD(self.array[:]), 
+            self.flipLR(self.array[:]), 
+            self.flipLR(self.flipUD(self.array[:]))
+            ]
+        # get diagonal of every transformation of self.array
+        for form in all_forms:
+            cols = list(range(self.c))
+            rows = list(range(self.r))
+            # from the top left item, move down diagonally, saving to hold
+            # then restart from the top, one step to the right and so on
+            # then get the next form and repeat
+            for c in range(self.c):
+                try:
+                    while len(rows)<=len(cols):
+                        hold = []
+                        for i,j in zip(rows, cols):
+                            try:
+                                hold.append(form[i][j])
+                            except IndexError:
+                                continue
+
+                        diags.append(hold)
+                        cols.remove(cols[0])
+                    rows.remove(rows[-1])
+
+                except IndexError:
+                    continue
+        return self.trimDiags(diags)
+
+    def transpose(self, array=None):
+        ''' return the transpose of the matrix '''
+        if not array:
+            array = self.array
+        transpose = []
+        # put all cth items of every row in a list and make each list a new row
+        for c in range(self.c):
+            hold = []
+            for r in range(self.r):
+                hold.append(array[r][c])
+            transpose.append(hold)
+        return transpose
+
+    def disp(self, array=None):
+        ''' display array elements '''
+        if not array:
+            for n in self.array:
+                print(n)
+        else:
+            for n in array:
+                print(n)
+###########################################
+This concludes the Matrix class. I will instantiate a Matix object to stand for 
+the grid of the circles in this game. The matrix array will consist of 6 rows each 
+containing 6 elements (6x6).
+##########################################
+GRID = Matrix([list(range(1,7)), list(range(7,13)), 
+            list(range(13,19)), list(range(19,25)), 
+            list(range(25,31)), list(range(31,37))])
+#########################################################
+
+The two players playing this game will be represented by Player objects. 
+The players will have a list containing the moves they've made so far. 
+To check whether a player has won, I will need to check every combination of 4 moves 
+from the list of that player's moves and compare with every combination of 4 positions 
+gotten from the matrix object. If any combination from the player's moves is in the 
+list of combinations from the matrix, then the player has made a winning move or has 
+a winning combination. 
+The player will have a method that returns every combination of 4 moves from its list of 
+movess and another method that clears its moves in case a winner is found and the game is 
+reset.
+
+###########################################
+# Imports
+from itertools import combinations
+.
+.
+.
+class Player(object):
+    def __init__(self):
+        self.moves = []
+
+    def getQuads(self):
+        ''' return all possible groups of fours from moves made '''
+        quads = list(combinations(self.moves, 4))
+        return quads
+
+    def clearMoves(self):
+        ''' reset moves '''
+        self.moves = []
+###########################################
+That deals with the classes necessary for this game.
+
+Now to begin the window. As already stated, the window will consist of 2 parts: 
+a top part containing a ball with the colour of the active player, and a bottom 
+part containing a grid of white circles whose colours change when the columns are clicked
+on.
+The top circle will move, following the mouse, but will always stay within the six 
+columns, never in-between.
+When a column is clicked on and a circle's colour is changed, the top circle's colour 
+will change, signifying that the player has changed.
+###############################################
+def drawTopCircle(mouse_pos, col):
+    # draw rect background
+    top_rect = pygame.Rect(0, 0, *TOP_SCREEN_SIZE)
+    pygame.draw.rect(screen, BLACK, top_rect)
+    # draw circle
+    pos = (40,60) # initial position
+    for n in range(0, WIDTH, GRID_SIDE):
+        if n <= mouse_pos.x <= n+GRID_SIDE:
+            # the position will be at a fixed y value, the x value however, 
+            # will be at intervals of GRID_SIDE apart
+            pos = (n+GRID_SIDE/2, 60)
+            break
+    pygame.draw.circle(screen, col, pos, 39, 0)
+    pygame.display.update()
+    # The position is returned in order that the correct grid circle will be 
+    # obtained later
+    return pos
+##########################################
+The grid circles will be easily drawn. The colours of the circles will be handled
+by the COL_IND variable that will be initialised by a special fxn:
+############################################
+def createColourIndex():
+    # create a global dictionary where keys are positions and values
+    # are colours
+    global COL_IND
+    i = 1
+    for n in range(0,WIDTH,GRID_SIDE):
+        for m in range(0,WIDTH,GRID_SIDE):
+            COL_IND[i] = WHITE
+            i += 1
+########################################
+def drawGridCircles():    
+    # draw circles
+    ind = 1
+    for n in range(0,WIDTH,GRID_SIDE):
+        for m in range(0,WIDTH,GRID_SIDE):
+            pos = (40+m, 40+n+TOP_SCREEN_SIZE[1])
+            pygame.draw.circle(screen, COL_IND[ind], pos, 39, 0) # screen_surface, colour, position, radius, thickness
+            # radius of 39, diameter 78 => space of 1 pixel on the top and bottom of cell
+            ind += 1
+#####################################3###
+
+When checking for a winner, from the diagonals returned and the rows and columns of 
+the matrix object, groups of fours (quads) will have to be formed for the comparison 
+to occur. A fxn inQuads() I created does just that. It takes a list and returns 
+all groups of four that you can get from the list without shuffling or moving the items
+around.
+######################################
+def inQuads(array):
+    # return list in groups of fours
+    hold = []
+    for arr in array:
+        n = len(arr)-4
+        ind = 0
+        try:
+            while ind<=n:
+                hold.append(arr[ind:ind+4])
+                ind+=1
+        except IndexError:
+            continue
+
+    return hold
+#####################################
+This will be used in checking for winners. 
+When a winner is found, events will be set to blocked to disable any activity 
+until the screen is reset.
+####################################
+def checkForWinner(gamer1, gamer2):
+    diags = GRID.diags
+    valid_diags = [diag for diag in diags if len(diag) > 3]
+    diag_quads = inQuads(valid_diags)
+    row_quads = inQuads(GRID.array)
+    col_quads = inQuads(GRID.transpose())
+    wins = inQuads(diag_quads) + row_quads + col_quads # all possible wins
+    q1 = gamer1.getQuads(); q2 = gamer2.getQuads()
+    for quad in q1:
+        if sorted(list(quad)) in wins:
+            pygame.event.set_blocked(MOUSEBUTTONDOWN)
+            return 'Gamer 1'
+    for quad in q2:
+        if sorted(list(quad)) in wins:
+            pygame.event.set_blocked(MOUSEBUTTONDOWN)
+            return 'Gamer 2'
+    return
+############################################
+The winner found is declared at the top, and a delay is set for 1.5 seconds.
+##############################################
+def declareWinner(winner=None):
+    # draw rect background
+    top_rect = pygame.Rect(0, 0, *TOP_SCREEN_SIZE)
+    pygame.draw.rect(screen, BLACK, top_rect)
+
+    if winner:
+        # blit text
+        winner = WINNERFONT.render(winner.upper() + ' WINS', 1, YELLOW)
+        screen.blit(winner, (20,20))
+
+    pygame.display.update()
+    pygame.time.delay(1500)
+###############################################
+
+The last necessary fxn before main() will be the getPos() fxn. This fxn will be 
+used to get the position of the circle whose colour will be changed when the mouse 
+clicks on its column. There must be a way to make note of which row on that column 
+a circle's colour was last changed and then to return the next row. Also note that the 
+rows will be in decreasing order of x.
+For this purpose, I created a global list, ROWS, that will keep track of the rows on 
+each column where the last circle had its colour changed.
+##########################
+ROWS = [5,5,5,5,5,5]
+##########################
+After a circle on a particular column has its colour changed, the value in ROWS at the 
+index of that column will be reduced by 1. This way, the rows are in decreasing order.
+When any column value in ROWS is -1 (or less), there will be no change and no circle 
+will have its colour changed. When all columns are filled up, ie, when ROWS consists of 
+all -1's, the screen will be reset.
+####################################
+def getPos(col_ind):
+    # This function returns the pos in the grid, given the col_ind
+    global ROWS
+    try:
+        if ROWS[col_ind-1] >= 0:
+            r = ROWS[col_ind-1]
+            c = col_ind-1
+            pos = GRID.array[r][c]
+            ROWS[col_ind-1] -= 1
+            return pos
+        else: 
+            # 'END OF COLUMN REACHED'
+            return None
+
+    except IndexError:
+        pass
+################################################
+
+I decided to put drawing the window in a seperate fxn
+###########################3
+def drawWindow():
+    screen.fill(BLUE)
+    drawGridCircles()
+########################
+
+Finally, the main() fxn.
+colours and players both start with None just so that turn will flip from positive 
+to negative to change players.
+####################################
+def main():
+    global ROWS
+    ROWS = [5,5,5,5,5,5] # This is here in case of a reset
+    turn = 1
+    colours = [None, RED, YELLOW]
+    gamer1 = Player(); gamer2 = Player()
+    players = [None, gamer1, gamer2]
+    winner = None
+    pos = drawTopCircle(Vector2(40,60), colours[turn])
+    createColourIndex()
+
+    running = True
+    while running:
+
+        for event in pygame.event.get():
+            if event.type == QUIT:
+                pygame.quit()
+                exit()
+
+            # handle mouse click on column
+            if event.type == MOUSEBUTTONDOWN:
+                col = colours[turn]
+                pos = drawTopCircle(Vector2(pygame.mouse.get_pos()), col)
+                col_ind = int((pos[0]+40)/80) # This calculates the column index from the top circle pos
+
+                pos = getPos(col_ind)
+
+                # Save position in player list
+                if pos:
+                    gamer = players[turn]
+                    gamer.moves.append(pos)
+
+                # Change colour of given grid position
+                COL_IND[pos] = colours[turn]
+
+                # Only change turn if column not filled up
+                if ROWS[col_ind-1] <= -1 and not pos:   #This fixes the problem of colour not changing 
+                    pass                                   # when you click a filled column
+                else: turn *= -1        
+
+                winner = checkForWinner(gamer1, gamer2) 
+
+        drawWindow()
+        col = colours[turn]
+        pos = drawTopCircle(Vector2(pygame.mouse.get_pos()), col)
+
+        # if grid is full
+        if ROWS == [-1,-1,-1,-1,-1,-1]:
+                declareWinner()
+                # reset game
+                winner = None
+                createColourIndex()
+                gamer1.clearMoves()
+                gamer2.clearMoves()
+                ROWS = [5,5,5,5,5,5]
+
+        # check for winner
+        if winner: 
+            info('Winner is ' + winner)
+            declareWinner(winner)
+            pygame.event.set_allowed(MOUSEBUTTONDOWN)
+
+            main()
+########################################
+if __name__ == "__main__":
+    main()
+#######################################
+I think the main() fxn is self explanatory.
+This is the end of the game.
